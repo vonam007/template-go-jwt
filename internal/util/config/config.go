@@ -58,3 +58,11 @@ func (d DBConfig) PostgresDSN() string {
 	// host=... port=... user=... password=... dbname=... sslmode=disable
 	return "host=" + d.Host + " port=" + d.Port + " user=" + d.User + " password=" + d.Password + " dbname=" + d.Name + " sslmode=disable"
 }
+
+// PostgresURL returns a postgres URL suitable for golang-migrate when using
+// the file source (e.g. postgres://user:pass@host:port/dbname?sslmode=disable).
+func (d DBConfig) PostgresURL() string {
+	// Note: this is a simple builder; if your password contains special
+	// characters you should url.QueryEscape it when generating production URLs.
+	return "postgres://" + d.User + ":" + d.Password + "@" + d.Host + ":" + d.Port + "/" + d.Name + "?sslmode=disable"
+}

@@ -16,19 +16,24 @@ COPY vendor ./vendor
 # Copy the rest of the source
 COPY . .
 
-# Build the static binary using vendor if available
-# If vendor/ exists, use -mod=vendor to avoid network fetches.
+# Build the static binaries using vendor if available
+# Build both app and migrate binaries so the final image can run either.
 RUN if [ -d ./vendor ]; then \
-			CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -mod=vendor -o /app/app ./; \
+			CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -mod=vendor -o /app/app ./ && \
+			CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -mod=vendor -o /app/migrate ./cmd/migrate; \
 		else \
-			CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /app/app ./; \
+			CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /app/app ./ && \
+			CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /app/migrate ./cmd/migrate; \
 		fi
 
 ### final image
 FROM alpine:3.18
 RUN apk add --no-cache ca-certificates tzdata
 WORKDIR /app
+
+# copy both binaries into final image
 COPY --from=builder /app/app /app/app
+COPY --from=builder /app/migrate /app/migrate
 
 ENV PORT=8080
 EXPOSE 8080

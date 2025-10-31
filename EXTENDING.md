@@ -1,29 +1,46 @@
 # Hướng dẫn mở rộng hệ thống — Thêm một service mới (bằng tiếng Việt)
 
-Tài liệu này mô tả các bước cụ thể để thêm một service mới vào template Go MVC hiện tại. Ví dụ: thêm service `posts` (hoặc `product`, `order`...) từ lúc tạo bảng DB, viết repository, service, controller, khai route, đến viết test và cấu hình docker.
+Tài liệu này cập nhật hướng dẫn mở rộng dự án theo trạng thái hiện tại: hệ thống dùng GORM cho ORM, và file-based migrations (thư mục `migrations/`) được chạy bằng `golang-migrate` thông qua binary `cmd/migrate` hoặc service `migrate` trong `docker-compose.yml`.
 
-Mục tiêu: bạn có thể làm theo từng bước sau để thêm service mới mà không phá cấu trúc hiện có.
+Mục tiêu: bạn có thể thêm một resource/service (ví dụ `posts`) từ thiết kế DB, tạo file migrations, đến viết model/repo/service/controller, đăng ký route và test.
 
 ## Tổng quan các bước
 
-1. Thiết kế bảng DB và migration SQL.
-2. Cập nhật docker-compose / .env (nếu cần) để có DB và chạy migration.
-3. Thêm model ở `internal/models`.
-4. Thêm repository (interface + Postgres implementation hoặc InMemory) ở `internal/repositories`.
-5. Thêm service nơi chứa business logic ở `internal/services`.
+1. Thiết kế bảng DB và tạo file-based migrations (thư mục `migrations/`).
+2. (Tuỳ chọn) Cập nhật `docker-compose.yml` / `.env` để chạy DB và job `migrate`.
+3. Thêm model ở `internal/models` với tag GORM.
+4. Thêm repository (interface + in-memory + GORM Postgres impl) ở `internal/repositories`.
+5. Thêm service (business logic) ở `internal/services`.
 6. Thêm controller (HTTP handlers) ở `internal/controllers`.
-7. Đăng ký routes trong `internal/server/router.go` (hoặc một file router riêng).
-8. Viết unit tests (service/repo/controller) và integration tests nếu cần.
-9. Chạy migrations và khởi động dịch vụ (docker compose hoặc local).
+7. Đăng ký routes trong `internal/server/router.go`.
+8. Viết unit tests và (tuỳ) integration tests.
 
 ---
 
-## 1) Thiết kế DB và tạo migration
+## 1) File-based migrations (golang-migrate)
 
-- Ví dụ `posts` table minimal:
+Project hiện có thư mục `migrations/`. Migrations là cặp file `.up.sql` / `.down.sql` (ví dụ `1_create_users.up.sql` và `1_create_users.down.sql`).
+
+Tạo migration mới (cách nhanh, dùng migrate CLI):
+
+1. Cài CLI (local dev):
+
+```cmd
+go install github.com/golang-migrate/migrate/v4/cmd/migrate@latest
+```
+
+2. Tạo migration (ví dụ: tạo posts):
+
+```cmd
+migrate create -ext sql -dir migrations create_posts_table
+```
+
+Lệnh trên sẽ tạo hai file có tiền tố số phiên bản trong `migrations/`: `000002_create_posts_table.up.sql` và `000002_create_posts_table.down.sql` (số có thể khác). Chỉnh sửa `.up.sql` để thêm DDL, và `.down.sql` để rollback.
+
+Ví dụ up:
 
 ```sql
-CREATE TABLE posts (
+CREATE TABLE IF NOT EXISTS posts (
   id TEXT PRIMARY KEY,
   title TEXT NOT NULL,
   body TEXT NOT NULL,
@@ -32,215 +49,136 @@ CREATE TABLE posts (
 );
 ```
 
-- Lời khuyên: dùng công cụ migration (migrate, golang-migrate, goose, or sql-migrate). Đặt script migration vào thư mục `migrations/`.
+Ví dụ down:
 
-Ví dụ dùng `migrate`:
+```sql
+DROP TABLE IF EXISTS posts;
+```
+
+3. Chạy migration:
+
+- Từ code (đã thêm `cmd/migrate`):
 
 ```cmd
-# cài migrate (local)
-go install github.com/golang-migrate/migrate/v4/cmd/migrate@latest
-
-# tạo file migration SQL
-migrate create -ext sql -dir migrations create_posts_table
+go run ./cmd/migrate
 ```
 
-Sau đó thêm SQL vào file migration sinh ra.
+`cmd/migrate` dùng `golang-migrate` để chạy các file trong `migrations/` và áp dụng chúng vào DB URL lấy từ `.env` (hàm `internal/util/config.LoadDB().PostgresURL()`).
 
-## 2) Cấu hình Docker / Compose để chạy migration (tuỳ chọn)
+- Hoặc dùng docker compose (khuyến nghị cho môi trường đúng):
 
-- `docker-compose.yml` hiện có service `db` và `app`. Bạn có thể thêm một dịch vụ `migrate` tạm thời để chạy migration khi deploy hoặc tích hợp migration vào bước khởi động app (thực hiện cẩn thận!).
-
-Ví dụ một service `migrate` trong `docker-compose.yml` (tham khảo):
-
-```yaml
-  migrate:
-    image: migrate/migrate
-    command: -path=/migrations -database "${DB_URL}" up
-    volumes:
-      - ./migrations:/migrations
-    depends_on:
-      - db
-    env_file: .env
+```cmd
+docker compose build app
+docker compose up -d db
+docker compose run --rm migrate
 ```
 
-Trong `.env` bạn cần cung cấp `DB_URL` (ví dụ `postgres://postgres:postgres@db:5432/template?sslmode=disable`). Hoặc dùng `internal/util/config.LoadDB().PostgresDSN()` để xây DSN trong code.
+`migrate` service trong `docker-compose.yml` đã cấu hình để chạy `/app/migrate` (binary trong image) và dùng `migrations/` đã được COPY vào image builder context. Nếu bạn chỉ cần rollback, bạn có `docker compose run --rm migrate down` (hiện `cmd/migrate` hỗ trợ tham số `down`).
 
-## 3) Thêm model
+4. Lưu ý khi xây DB URL: nếu mật khẩu chứa ký tự đặc biệt, hãy escape nó (hoặc dùng biến môi trường an toàn). File `internal/util/config` cung cấp `PostgresURL()` helper.
 
-- Tạo `internal/models/post.go`:
+## 2) Thêm model
+
+Tạo `internal/models/post.go` với tag GORM, ví dụ:
 
 ```go
 package models
 
 type Post struct {
-    ID string `json:"id"`
-    Title string `json:"title"`
-    Body string `json:"body"`
-    AuthorID string `json:"author_id"`
+  ID       string `gorm:"primaryKey" json:"id"`
+  Title    string `json:"title"`
+  Body     string `json:"body"`
+  AuthorID string `json:"author_id"`
 }
 ```
 
-## 4) Thêm repository
+Bạn có thể dùng GORM's `AutoMigrate` during development, nhưng lưu ý: schema changes should be driven by SQL migrations for production.
 
-- Tạo interface repository để dễ mock trong test:
+## 3) Repository
 
-`internal/repositories/post_repo.go`
+- Tạo interface `PostRepository` trong `internal/repositories/post_repo.go`.
+- Implement an in-memory repo for tests and a GORM-based repo for production.
+
+GORM repo skeleton:
 
 ```go
-package repositories
+type PostRepoGorm struct { db *gorm.DB }
 
-import "template-go-jwt/internal/models"
+func NewPostRepoGorm(db *gorm.DB) *PostRepoGorm { return &PostRepoGorm{db: db} }
 
-type PostRepository interface {
-    Create(p *models.Post) error
-    GetByID(id string) (*models.Post, error)
-    ListByAuthor(authorID string) ([]*models.Post, error)
+func (r *PostRepoGorm) Create(p *models.Post) error {
+  return r.db.Create(p).Error
 }
-```
 
-- Implement in-memory for dev/tests: `internal/repositories/post_repo_mem.go`.
-- Implement Postgres-backed repo later (using `database/sql` + `pgx` or `sqlx`). Use prepared statements and context.
-
-Example Postgres repo skeleton (pseudo):
-
-```go
-type PostRepoPG struct { db *sql.DB }
-
-func (r *PostRepoPG) Create(p *models.Post) error {
-  _, err := r.db.ExecContext(ctx, "INSERT INTO posts (id,title,body,author_id) VALUES ($1,$2,$3,$4)", p.ID, p.Title, p.Body, p.AuthorID)
-  return err
-}
-```
-
-## 5) Thêm service
-
-- Tạo `internal/services/post_service.go` để chứa logic như validate, business rules, event emit, etc.
-
-```go
-package services
-
-import (
-  "template-go-jwt/internal/models"
-  "template-go-jwt/internal/repositories"
-)
-
-type PostService struct { repo repositories.PostRepository }
-
-func NewPostService(r repositories.PostRepository) *PostService { return &PostService{repo: r} }
-
-func (s *PostService) Create(p *models.Post) error {
-  // validate -> repo.Create
-}
-```
-
-Viết unit test cho service (happy path + validation failures).
-
-## 6) Thêm controller (HTTP handlers)
-
-- Tạo `internal/controllers/post_controller.go`:
-
-```go
-package controllers
-
-import (
-  "encoding/json"
-  "net/http"
-
-  "template-go-jwt/internal/response"
-  "template-go-jwt/internal/services"
-)
-
-type PostController struct { svc *services.PostService }
-
-func NewPostController(s *services.PostService) *PostController { return &PostController{svc:s} }
-
-func (c *PostController) Create(w http.ResponseWriter, r *http.Request) {
-  var req models.Post
-  if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-    response.Error(w, http.StatusBadRequest, "invalid body")
-    return
+func (r *PostRepoGorm) GetByID(id string) (*models.Post, error) {
+  var p models.Post
+  if err := r.db.First(&p, "id = ?", id).Error; err != nil {
+    return nil, err
   }
-  if err := c.svc.Create(&req); err != nil { response.Error(w, http.StatusInternalServerError, err.Error()); return }
-  response.JSON(w, http.StatusCreated, req)
+  return &p, nil
 }
 ```
 
-## 7) Đăng ký routes
+## 4) Service & Controller
 
-- Mở `internal/server/router.go` và đăng ký route mới. Ví dụ:
+- Service: `internal/services/post_service.go` chứa business logic and calls repo.
+- Controller: `internal/controllers/post_controller.go` contains HTTP handlers and uses `response.JSON` / `response.Error` helpers.
+
+## 5) Register routes
+
+Add routes in `internal/server/router.go`:
 
 ```go
-mux.HandleFunc("/posts", postCtrl.Create) // POST /posts
+mux.HandleFunc("/posts", postCtrl.Create) // POST
 mux.HandleFunc("/posts/", postCtrl.GetByID) // GET /posts/{id}
 ```
 
-- Nếu route cần auth: wrap bằng `middleware.AuthMiddleware(cfg.JWTSecret, handler)` hoặc `RequireRole(...)` nếu cần role-based.
+Wrap handlers with `middleware.AuthMiddleware` or `middleware.RequireRole` if route requires authentication/authorization.
 
-## 8) Viết tests
+## 6) Tests
 
-- Unit tests:
-  - Repository in-memory tests: Create/Get/List
-  - Service tests: validation, error paths
-  - Controller tests: handler tests using httptest.Server / httptest.NewRecorder
+- Unit tests for repo/service/controller (use in-memory repo for controller/service tests).
+- Integration tests: use docker-compose to start a real Postgres, run `migrate`, then run HTTP tests against the running app.
 
-Ví dụ test handler:
+## 7) Migration creation quick reference
 
-```go
-func TestCreatePostHandler(t *testing.T) {
-  repo := repositories.NewInMemoryPostRepo()
-  svc := services.NewPostService(repo)
-  ctrl := controllers.NewPostController(svc)
+Local dev with migrate CLI:
 
-  body := `{"id":"p1","title":"hi","body":"b","author_id":"alice"}`
-  req := httptest.NewRequest("POST", "/posts", strings.NewReader(body))
-  w := httptest.NewRecorder()
-  ctrl.Create(w, req)
-  if w.Code != http.StatusCreated { t.Fatalf("expected 201 got %d", w.Code) }
-}
+```cmd
+go install github.com/golang-migrate/migrate/v4/cmd/migrate@latest
+migrate create -ext sql -dir migrations create_posts_table
 ```
 
-## 9) Migrations và khởi chạy
+Then edit the generated `.up.sql` and `.down.sql`, then run:
 
-- Khi migration đã sẵn sàng, bạn có thể:
-  - Chạy migration local bằng `migrate` hoặc script SQL trực tiếp.
-  - Thêm step migration vào CI/CD hoặc docker-compose `migrate` service (như phần 2).
-
-## 10) Docker / CI notes
-
-- Nếu bạn muốn app connect DB ngay khi khởi động trong compose, hãy thêm retry/wait-for logic để đợi Postgres sẵn sàng (khoảng 3-5 lần thử với sleep).
-- Tốt hơn là chạy migration như bước riêng trong deploy pipeline rồi mới khởi động app.
-
-## Checklist tóm tắt (copy/paste)
-
-1. [ ] Tạo migration SQL và đảm bảo nó chạy thành công.
-2. [ ] Tạo `internal/models/<resource>.go`.
-3. [ ] Tạo `internal/repositories/<resource>_repo.go` (interface) và in-memory hoặc PG impl.
-4. [ ] Tạo `internal/services/<resource>_service.go`.
-5. [ ] Tạo `internal/controllers/<resource>_controller.go`.
-6. [ ] Ghi route vào `internal/server/router.go`.
-7. [ ] Viết tests cho repo/service/controller.
-8. [ ] Chạy `go test ./...` và chạy migration.
-9. [ ] Cập nhật README / docs / API spec.
-
-## Ví dụ nhanh (curl)
-
-1. Tạo post (giả sử không cần auth):
-
-```bash
-curl -X POST http://localhost:8080/posts -H 'Content-Type: application/json' -d '{"id":"p1","title":"Hello","body":"World","author_id":"alice"}'
+```cmd
+go run ./cmd/migrate
 ```
 
-2. Lấy post:
+Or via Docker (build once):
 
-```bash
-curl http://localhost:8080/posts/p1
+```cmd
+docker compose build app
+docker compose up -d db
+docker compose run --rm migrate
 ```
+
+## Checklist (copy/paste)
+
+1. [ ] `migrate create -ext sql -dir migrations <name>`
+2. [ ] Fill `.up.sql` and `.down.sql` with DDL
+3. [ ] `go run ./cmd/migrate` (or `docker compose run --rm migrate`)
+4. [ ] Add model struct in `internal/models`
+5. [ ] Add repository interface + GORM implementation in `internal/repositories`
+6. [ ] Add service in `internal/services`
+7. [ ] Add controller in `internal/controllers` and register route
+8. [ ] Add tests and run `go test ./...`
 
 ---
 
-Nếu bạn muốn, mình có thể: 
+Nếu bạn muốn, tôi có thể:
 
-- tạo một mẫu `posts` feature hoàn chỉnh cho dự án (migration SQL + in-memory repo + service + controller + route + tests), hoặc
-- thêm integration test mẫu dùng docker-compose để khởi Postgres và chạy migration rồi test endpoints.
+- Tạo migration mẫu `posts` (file up/down SQL) và tạo `internal/models/post.go`, `internal/repositories/post_repo_gorm.go`, `internal/services/post_service.go`, `internal/controllers/post_controller.go` và route registration + tests. Tôi sẽ thực hiện từng phần và chạy `go test ./...` sau mỗi bước.
+- Hoặc chỉ tạo migration mẫu và hướng dẫn bạn chạy nó.
 
-Hãy cho biết bạn muốn mẫu mã hoàn chỉnh (mình sẽ tạo các file mã), hay chỉ cần tài liệu như trên. 
+Chọn 1 trong 2 (tạo mẫu đầy đủ cho `posts` hoặc chỉ tạo migration mẫu) để tôi làm tiếp.

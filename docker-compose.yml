@@ -15,6 +15,7 @@ services:
 
   app:
     build: .
+    image: template-go-jwt:latest
     depends_on:
       - db
     ports:
@@ -30,6 +31,16 @@ services:
       - DB_USER=${DB_USER:-postgres}
       - DB_PASSWORD=${DB_PASSWORD:-postgres}
       - DB_NAME=${DB_NAME:-template}
+    networks:
+      - appnet
+
+  migrate:
+    image: template-go-jwt:latest
+    depends_on:
+      - db
+    env_file: .env
+    command: ["/app/migrate"]
+    restart: "no"
     networks:
       - appnet
 

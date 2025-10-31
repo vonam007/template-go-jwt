@@ -55,6 +55,34 @@ TOKEN=<token-from-login>
 curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/admin/
 ```
 
+Run migrations as a one-shot job (build once, run often)
+
+The compose file includes a `migrate` service that uses the same image as `app` and runs with `RUN_MIGRATE=1`.
+
+Workflow to avoid rebuilding every time:
+
+1. Build the app image once:
+
+```cmd
+cd /d d:\GitD\template-go-jwt
+docker compose build app
+```
+
+2. Start Postgres (detached):
+
+```cmd
+docker compose up -d db
+```
+
+3. Run migrations against the running DB using the already-built image:
+
+```cmd
+docker compose run --rm migrate
+```
+
+`migrate` will connect to the `db`, run pending migrations (it records applied migrations in the `migration_records` table) and then exit. There's no need to rebuild your app image to run migrations — only rebuild when you change the app binary.
+
+
 Speed up Docker builds with vendoring
 
 To avoid downloading dependencies inside the Docker build and make builds reproducible and faster, you can vendor your dependencies and commit the `vendor/` directory into the repository.

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"template-go-jwt/internal/controllers"
+	"template-go-jwt/internal/db"
 	"template-go-jwt/internal/models"
 	"template-go-jwt/internal/repositories"
 	"template-go-jwt/internal/server"
@@ -16,8 +17,22 @@ import (
 
 func main() {
 	cfg := config.Load()
+	// attempt to connect to DB (if available) — used for later DB wiring
+	dbCfg := config.LoadDB()
+	gdb, err := db.ConnectWithRetry(dbCfg, 5, 2*time.Second)
+	if err != nil {
+		log.Printf("warning: could not connect to DB: %v\n", err)
+		gdb = nil
+	} else {
+		defer func() {
+			if err := db.Close(gdb); err != nil {
+				log.Printf("error closing db: %v", err)
+			}
+		}()
+	}
 
 	// Wire MVC components: repo -> service -> controller
+	// NOTE: default is in-memory repo. Replace with Postgres repo implementation when ready.
 	repo := repositories.NewInMemoryUserRepo()
 	// seed sample users so login works out-of-the-box
 	repo.Seed(&models.User{ID: "alice", Name: "Alice", Role: "admin"})
