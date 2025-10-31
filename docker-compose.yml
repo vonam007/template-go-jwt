@@ -3,10 +3,11 @@ services:
   db:
     image: postgres:15
     restart: unless-stopped
+    env_file: .env
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: template
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - POSTGRES_DB=${POSTGRES_DB:-template}
     volumes:
       - pgdata:/var/lib/postgresql/data
     networks:
@@ -17,17 +18,18 @@ services:
     depends_on:
       - db
     ports:
-      - "8080:8080"
+      - "${PORT:-8080}:8080"
+    env_file: .env
     environment:
-      PORT: "8080"
-      JWT_SECRET: "dev-secret-change-me"
-      JWT_TTL_SECONDS: "3600"
+      - PORT=${PORT:-8080}
+      - JWT_SECRET=${JWT_SECRET:-dev-secret-change-me}
+      - JWT_TTL_SECONDS=${JWT_TTL_SECONDS:-3600}
       # DB connection info for the app to connect to postgres
-      DB_HOST: db
-      DB_PORT: "5432"
-      DB_USER: postgres
-      DB_PASSWORD: postgres
-      DB_NAME: template
+      - DB_HOST=${DB_HOST:-db}
+      - DB_PORT=${DB_PORT:-5432}
+      - DB_USER=${DB_USER:-postgres}
+      - DB_PASSWORD=${DB_PASSWORD:-postgres}
+      - DB_NAME=${DB_NAME:-template}
     networks:
       - appnet
 
