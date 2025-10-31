@@ -1,0 +1,13 @@
+.git
+.gitignore
+.env
+bin
+*.exe
+*.log
+vendor/
+**/*_test.go
+Dockerfile
+docker-compose.yml
+node_modules
+dist
+build
